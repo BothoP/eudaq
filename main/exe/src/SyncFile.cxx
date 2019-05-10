@@ -49,16 +49,26 @@ public:
         }
     }
 
+    bool all_queues_filled() {
+        bool any_subqueue_empty = false;
+        for (auto & subevent : subevents)
+            any_subqueue_empty |= subevent.empty();
+        return !(events.empty() || any_subqueue_empty);
+    }
+
     // checks for TLU trigger number overflow/wraparound (15 bit -> occurs every 32768 triggers)
     void check_tlu_overflow(size_t i_subevent, unsigned prev_trigger) {
         size_t i = i_subevent;
         // TODO: define detection limit, currently trying to detect jumps of up to ~500-1000
-        if (triggerIDs[i] < std::max((long) triggerID_offsets[i] + 500, (long) prev_trigger - 32000) &&
-                prev_trigger > triggerIDs[i] + 32000) {
+//        if (triggerIDs[i] < std::max((long) triggerID_offsets[i] + 500, (long) prev_trigger - 32000) &&
+//                prev_trigger > triggerIDs[i] + 32000) {
+//        if (triggerIDs[i] < triggerID_offsets[i] + 2000 && prev_trigger > triggerIDs[i] + 30000) {
+        if (triggerIDs[i] + 20 < prev_trigger) {
             std::cout << "overflow detected " << subtype[i] << " new: " << triggerIDs[i] << " old: "
                       << prev_trigger << std::endl;
             triggerID_offsets[i] += 32768;
-            triggerIDs[i] = triggerID_offsets[i] + eudaq::PluginManager::GetTriggerID(*subevents[i].front());
+//            triggerIDs[i] = triggerID_offsets[i] + eudaq::PluginManager::GetTriggerID(*subevents[i].front());
+            triggerIDs[i] += 32768;
         }
     }
 
@@ -67,8 +77,8 @@ public:
     // calls trigger number overflow/wraparound check
     void update_trigger_id(size_t i) {
         unsigned triggerID_old = triggerIDs[i];
-        // check for FEI4 problem, do not increase trigger to not loose synchronization.
-        // most triggers seem to be sent later (checked for DEPFET 2019 run 002141)
+        // check for FEI4 problem, do not increase trigger to not loose synchronization
+        // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002141)
         unsigned cur_trigID = eudaq::PluginManager::GetTriggerID(*subevents[i].front());
         if (typeIDs[i] != tlu_id && cur_trigID > 32768) {
             std::cout << eudaq::Event::id2str(typeIDs[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
@@ -77,16 +87,19 @@ public:
 
         // catch NI error and increase normally
 //        } else if (subtype[i] == "NI" && (cur_trigID == 4800 || std::abs((long) (cur_trigID + triggerID_offsets[i]) - (long)triggerID_old) > 5)) {
-//            std::cout << "NI problem " << cur_trigID + triggerID_offsets[i] << " " << triggerID_old <<  std::endl;
-//            triggerIDs[i]++;
-//            high_trg_nr_problem[i] = true;
+        } else if (subtype[i] == "NI" && std::abs((long) (cur_trigID + triggerID_offsets[i]) - (long)triggerID_old) > 5 && ((triggerIDs[i]+1) % 32768)) {
+            std::cout << "NI problem " << cur_trigID + triggerID_offsets[i] << " " << triggerID_old <<  std::endl;
+            triggerIDs[i] = (triggerIDs[i]+1) % 32768 + triggerID_offsets[i];
+            high_trg_nr_problem[i] = true;
+            check_tlu_overflow(i, triggerID_old);
         } else {
+            triggerIDs[i] = triggerID_offsets[i] + cur_trigID;
+            // check for overflow                   // except if NI comes back from trigger problem in this event
+            // if(!(high_trg_nr_problem[i] && subtype[i] == "NI"))
+            check_tlu_overflow(i, triggerID_old);
             // reset trg_nr_problem flag
             if (high_trg_nr_problem[i])
                 high_trg_nr_problem[i] = false;
-            triggerIDs[i] = triggerID_offsets[i] + cur_trigID;
-            // check for overflow
-            check_tlu_overflow(i, triggerID_old);
         }
     }
 
@@ -152,7 +165,9 @@ public:
             if (typeIDs[i] != tlu_id && (triggerIDs[i] != events.front().GetEventNumber() + 1 || high_trg_nr_problem[i])) {  // && !subevents[i].front()->IsEORE()) {
                 std::cout << i << " " << eudaq::Event::id2str(typeIDs[i]) << ":" << subtype[i] << " "
                           << triggerIDs[i] << std::endl;
-                return true;
+                // hack because NI sends invalid trigger number in EORE
+                if (!subevents[i].front()->IsEORE())
+                    return true;
             }
         }
         return false;
@@ -269,18 +284,16 @@ int main(int argc, char **argv) {
 
         // variables used in the loop
         unsigned counter = 0;
-        unsigned end = 1000000;
 
-        unsigned subevent_trigger[setup.n_sub];
+//        unsigned subevent_trigger[setup.n_sub];
         // for (size_t i = 0; i < n_sub; i++) event_tree.Branch("subevent_trigger", &subevent_trigger[i], "subevent_trigger/i");
         // event_tree.Branch("subevent_trigger", subevent_trigger, ("subevent_trigger["+std::to_string(setup.n_sub)+"]/i").c_str());
 
 
         // mismatch variables
-        bool got_mismatch = false;
-        size_t mismatched_det = 0;
+        bool got_mismatch;
 
-        while (reader.NextEvent()) { // && counter < 37000) {
+        while (reader.NextEvent()) { //  && counter < 114100) { // && counter < 37000) {
             counter++;
             // get current event as detector event
             read_event = &reader.GetDetectorEvent();
@@ -314,6 +327,22 @@ int main(int argc, char **argv) {
         }
 
         // TODO: Write out possibly remaining events
+        while(setup.all_queues_filled()) {
+            // check event for mismatch
+            got_mismatch = setup.check_event();
+            setup.update_max_trigger();
+
+            // in case of mismatch discard global events and subevents of lower trigger IDs
+            if (got_mismatch) {
+                std::cout << "reset mismatch" << std::endl;
+                setup.discard_mismatch();
+            }
+                // no mismatch: write out event
+            else {
+                writer->WriteEvent(setup.merge_event());
+                setup.pop_event();
+            }
+        }
 
         std::cout << "Remaining global events: " << setup.events.size() << std::endl;
         for (size_t i = 0; i < setup.n_sub; i++) {
