@@ -13,7 +13,6 @@
 #include "TFile.h"
 #include "TTree.h"
 
-unsigned tlu_id = eudaq::Event::str2id("_TLU");  // ID of TLU subevents
 
 class SyncSetup {
 public:
@@ -31,6 +30,9 @@ public:
     unsigned max_triggerID = 0;
     size_t n_sub;
 
+    unsigned tlu_id = eudaq::Event::str2id("_TLU");  // ID of TLU subevents
+
+    // constructor needs BORE (Begin Of Run Event) to set up the queues
     explicit SyncSetup(const eudaq::DetectorEvent *bore) {
         if (!bore->IsBORE())
             throw;
@@ -47,16 +49,44 @@ public:
         }
     }
 
-    void check_tlu_overflow(size_t i_subevent, unsigned prev_trigger, const eudaq::Event &ev) {
+    // checks for TLU trigger number overflow/wraparound (15 bit -> occurs every 32768 triggers)
+    void check_tlu_overflow(size_t i_subevent, unsigned prev_trigger) {
         size_t i = i_subevent;
-        if (triggerIDs[i] < std::max((long) triggerID_offsets[i] + 1, (long) prev_trigger - 32760) &&
-                prev_trigger - triggerIDs[i] > 32000) {
+        // TODO: define detection limit, currently trying to detect jumps of up to ~500-1000
+        if (triggerIDs[i] < std::max((long) triggerID_offsets[i] + 500, (long) prev_trigger - 32000) &&
+                prev_trigger > triggerIDs[i] + 32000) {
             std::cout << "overflow detected " << subtype[i] << " new: " << triggerIDs[i] << " old: "
                       << prev_trigger << std::endl;
             triggerID_offsets[i] += 32768;
-            triggerIDs[i] =
-                    triggerID_offsets[i] +
-                    eudaq::PluginManager::GetTriggerID(ev);
+            triggerIDs[i] = triggerID_offsets[i] + eudaq::PluginManager::GetTriggerID(*subevents[i].front());
+        }
+    }
+
+    // updates trigger ID
+    // checks for FEI4 - high trigger number problem (>32768)
+    // calls trigger number overflow/wraparound check
+    void update_trigger_id(size_t i) {
+        unsigned triggerID_old = triggerIDs[i];
+        // check for FEI4 problem, do not increase trigger to not loose synchronization.
+        // most triggers seem to be sent later (checked for DEPFET 2019 run 002141)
+        unsigned cur_trigID = eudaq::PluginManager::GetTriggerID(*subevents[i].front());
+        if (typeIDs[i] != tlu_id && cur_trigID > 32768) {
+            std::cout << eudaq::Event::id2str(typeIDs[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
+            // triggerIDs[i]++;
+            high_trg_nr_problem[i] = true;
+
+        // catch NI error and increase normally
+//        } else if (subtype[i] == "NI" && (cur_trigID == 4800 || std::abs((long) (cur_trigID + triggerID_offsets[i]) - (long)triggerID_old) > 5)) {
+//            std::cout << "NI problem " << cur_trigID + triggerID_offsets[i] << " " << triggerID_old <<  std::endl;
+//            triggerIDs[i]++;
+//            high_trg_nr_problem[i] = true;
+        } else {
+            // reset trg_nr_problem flag
+            if (high_trg_nr_problem[i])
+                high_trg_nr_problem[i] = false;
+            triggerIDs[i] = triggerID_offsets[i] + cur_trigID;
+            // check for overflow
+            check_tlu_overflow(i, triggerID_old);
         }
     }
 
@@ -73,35 +103,17 @@ public:
         events.back().SetFlags(read_event->GetFlags());
         // copy tags
         std::vector<std::string> taglist = read_event->GetTagList("");
-        for (size_t i = 0; i < taglist.size(); i++) {
-            events.back().SetTag(taglist[i], read_event->GetTag(taglist[i]));
+        for (const auto & i : taglist) {
+            events.back().SetTag(i, read_event->GetTag(i));
         }
         // read in sub events
         for (size_t i = 0; i < n_sub; i++) {
-            // if deque empty, determine new trigger ID
-            if (subevents[i].empty()) {
-                unsigned triggerID_old;
-                triggerID_old = triggerIDs[i];
-                // prevent loss of trigger ID synchronisation for FEI4 problem
-                if (typeIDs[i] != tlu_id &&
-                    eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) > 32768) {
-                    std::cout << eudaq::Event::id2str(typeIDs[i]) << " " << subtype[i] << " "
-                              << eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) << std::endl;
-                    triggerIDs[i]++;
-                    high_trg_nr_problem[i] = true;
-                } else {
-                    // reset trg_nr_problem flag
-                    if (high_trg_nr_problem[i])
-                        high_trg_nr_problem[i] = false;
-                    triggerIDs[i] =
-                            triggerID_offsets[i] + eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i));
-                    // check for overflow  TODO: define detection limit
-                    check_tlu_overflow(i, triggerID_old, *read_event->GetEventPtr(i));
-                }
+            // create shared pointer references to subevents in queues
+            subevents[i].emplace(std::shared_ptr<eudaq::Event>(read_event->GetEventPtr(i)));
+            // if queue was empty, determine new trigger ID
+            if (subevents[i].size() == 1) {
+                update_trigger_id(i);
             }
-            // create shared pointer references to subevents in deques
-            // FIXME: Replace by emplace_back to prevent temporary copy?
-            subevents[i].push(std::shared_ptr<eudaq::Event>(read_event->GetEventPtr(i)));
         }
     }
 
@@ -126,7 +138,7 @@ public:
     void update_max_trigger() {
         // TODO: define max trigger jump
         for (size_t i = 0; i < n_sub; i++) {
-            if ((typeIDs[i] != tlu_id) && (triggerIDs[i] > max_triggerID) && (triggerIDs[i] < max_triggerID + 10000)) {
+            if ((typeIDs[i] != tlu_id) && (triggerIDs[i] > max_triggerID) && (triggerIDs[i] < max_triggerID + 10000) && !high_trg_nr_problem[i]) {
                 max_triggerID = triggerIDs[i];
                 // mismatched_det = i;
             }
@@ -137,7 +149,7 @@ public:
     bool check_event() {
         // check trigger IDs for mismatch
         for (size_t i = 0; i < n_sub; i++) {
-            if ((typeIDs[i] != tlu_id) && (triggerIDs[i] != (events.front().GetEventNumber() + 1))) {
+            if (typeIDs[i] != tlu_id && (triggerIDs[i] != events.front().GetEventNumber() + 1 || high_trg_nr_problem[i])) {  // && !subevents[i].front()->IsEORE()) {
                 std::cout << i << " " << eudaq::Event::id2str(typeIDs[i]) << ":" << subtype[i] << " "
                           << triggerIDs[i] << std::endl;
                 return true;
@@ -152,7 +164,6 @@ public:
         std::cout << events.front() << std::endl;
         for (size_t i = 0; i < n_sub; i++)
             std::cout << *subevents[i].front() << std::endl;
-        // return 0;
         // check global event
         if ((events.front().GetEventNumber() + 1) != max_triggerID) events.pop();
         // check sub events
@@ -165,21 +176,18 @@ public:
                 }
             }
             // check other sub events
-            else if (triggerIDs[i] != max_triggerID) {
+            else if (triggerIDs[i] != max_triggerID || high_trg_nr_problem[i]) {
                 std::cout << "delete " << i << " " << eudaq::Event::id2str(typeIDs[i]) << ":" << subtype[i]
                           << " " << triggerIDs[i] << std::endl;
                 subevents[i].pop();
                 if (!subevents[i].empty()) {
-                    unsigned triggerID_old = triggerIDs[i];
-                    triggerIDs[i] =
-                            triggerID_offsets[i] + eudaq::PluginManager::GetTriggerID(*subevents[i].front());
-                    // check for overflow  TODO: define detection limit
-                    check_tlu_overflow(i, triggerID_old, *subevents[i].front());
+                    update_trigger_id(i);
                 }
             }
         }
     }
 
+    // merges current subevents into global event and deletes subevents from their respective queues
     eudaq::DetectorEvent &merge_event() {
         for (size_t i = 0; i < n_sub; i++) {
             events.front().AddEvent(subevents[i].front());
@@ -187,20 +195,7 @@ public:
             // delete first event of subevent queue
             subevents[i].pop();
             if (!subevents[i].empty()) {
-                unsigned triggerID_old = triggerIDs[i];
-                triggerIDs[i] =
-                        triggerID_offsets[i] + eudaq::PluginManager::GetTriggerID(*subevents[i].front());
-                // check for overflow  TODO: define detection limit
-                if (triggerIDs[i] <
-                    std::max((long) triggerID_offsets[i] + 1, (long) triggerID_old - 32760) &&
-                    triggerID_old - triggerIDs[i] > 32000) {
-                    std::cout << "overflow detected " << subtype[i] << " new: " << triggerIDs[i] << " old: "
-                              << triggerID_old << std::endl;
-                    triggerID_offsets[i] += 32768;
-                    triggerIDs[i] =
-                            triggerID_offsets[i] +
-                            eudaq::PluginManager::GetTriggerID(*subevents[i].front());
-                }
+                update_trigger_id(i);
             }
         }
         return events.front();
@@ -285,17 +280,22 @@ int main(int argc, char **argv) {
         bool got_mismatch = false;
         size_t mismatched_det = 0;
 
-        while (reader.NextEvent()) {
+        while (reader.NextEvent()) { // && counter < 37000) {
             counter++;
             // get current event as detector event
             read_event = &reader.GetDetectorEvent();
+            // TODO handle EORE, also in subevents...
+//            if(read_event->IsEORE()) {
+//                writer->WriteEvent(*read_event);
+//                continue;
+//            }
 
             // fill global + subevent queues and determine total trigger IDs
             setup.add_event(read_event);
 
             // if FEI4 trigger number problem, immediately discard entire event
-            if(setup.check_high_trg())
-                continue;
+//            if(setup.check_high_trg())
+//                 continue;
 
             // check event for mismatch
             got_mismatch = setup.check_event();
@@ -316,7 +316,7 @@ int main(int argc, char **argv) {
         // TODO: Write out possibly remaining events
 
         std::cout << "Remaining global events: " << setup.events.size() << std::endl;
-        for (unsigned i = 0; i < setup.n_sub; i++) {
+        for (size_t i = 0; i < setup.n_sub; i++) {
             std::cout << "Remaining subevents: " << std::endl;
             std::cout << eudaq::Event::id2str(setup.typeIDs[i]) << " " << setup.subtype[i] << " " << setup.subevents[i].size()
                       << std::endl;
