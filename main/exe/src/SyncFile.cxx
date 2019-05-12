@@ -5,6 +5,7 @@
 #include <iostream>
 #include <string>
 #include <queue>
+#include <exception>
 #include "eudaq/OptionParser.hh"
 #include "eudaq/FileReader.hh"
 #include "eudaq/FileWriter.hh"
@@ -37,12 +38,13 @@ public:
     const unsigned char tlu_trg_bits;
     const unsigned max_tlu_trgnr = static_cast<unsigned int>(pow(2, tlu_trg_bits));
 
-    unsigned tlu_id = eudaq::Event::str2id("_TLU");  // ID of TLU subevents
+    const unsigned tlu_id = eudaq::Event::str2id("_TLU");  // ID of TLU subevents
+    unsigned tlu_event_offset;  // offset between TLU trigger and event number, is 1 for standard TLU firmware, 0 for Bonn TLU firmware (done by Tomek)
 
     // constructor needs BORE (Begin Of Run Event) to set up the queues
     explicit SyncSetup(const eudaq::DetectorEvent *bore, unsigned char tlu_trg_bits=15) : tlu_trg_bits(tlu_trg_bits) {
         if (!bore->IsBORE())
-            throw;
+            throw(eudaq::MessageException("Event supplied ot SyncSetup constructor is not BORE"));
         // determine number of sub detectors/events
         n_sub = bore->NumEvents();
         // initialize all counters and subevents
@@ -51,9 +53,25 @@ public:
         trgnr_out_of_order.resize(n_sub, false);
         trgnr_wraparound.resize(n_sub, false);
         subevents.resize(n_sub);
+        bool tlu_found = false;
         for (size_t i = 0; i < n_sub; i++) {
-            typeID.push_back(bore->GetEvent(i)->get_id());
-            subtype.push_back(bore->GetEvent(i)->GetSubType());
+            const eudaq::Event *subevent = bore->GetEvent(i);
+            typeID.push_back(subevent->get_id());
+            subtype.push_back(subevent->GetSubType());
+            // determine the TLU firmware version from BORE tags and decide about tlu trigger offset
+            if (typeID.back() == tlu_id) {
+                tlu_found = true;
+                std::string fw_id = subevent->GetTag("FirmwareID", "unknown");
+                std::cout << "firmware id " << fw_id << std::endl;
+                if(fw_id == "65") { // standard firmware
+                    tlu_event_offset = 1;
+                } else {  // Florian's producer for new TLU firmware does not have firmware tag in BORE
+                    tlu_event_offset = 0;
+                }
+            }
+        }
+        if(!tlu_found) {
+            throw(eudaq::MessageException("No TLU subevent found in BORE"));
         }
     }
 
@@ -97,9 +115,9 @@ public:
         // catch NI error and increase NI total trigger number by one instead
         } else if (subtype[i] == "NI" &&
                    std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > allowed_trg_jump_NI &&
-                   !((trgnr_actual[i] + 1) % max_tlu_trgnr == 0 && !trgnr_out_of_order[i]) ) {
+                   !((triggerID_old + 1) % max_tlu_trgnr == 0 && !trgnr_out_of_order[i]) ) {
             std::cout << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
-            trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
+            trgnr_actual[i] = (trgnr_actual[i] + tlu_event_offset) % max_tlu_trgnr + trgnr_tlu_offset[i];
             trgnr_out_of_order[i] = true;
             check_tlu_overflow(i, triggerID_old);
         } else {
@@ -173,7 +191,7 @@ public:
     bool check_event() {
         // check trigger IDs for mismatch
         for (size_t i = 0; i < n_sub; i++) {
-            if (typeID[i] != tlu_id && (trgnr_actual[i] != events.front().GetEventNumber() + 1 ||
+            if (typeID[i] != tlu_id && (trgnr_actual[i] != events.front().GetEventNumber() + tlu_event_offset ||
                                          trgnr_out_of_order[i])) {  // && !subevents[i].front()->IsEORE()) {
                 std::cout << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i] << " "
                           << trgnr_actual[i] << std::endl;
@@ -192,12 +210,12 @@ public:
         for (size_t i = 0; i < n_sub; i++)
             std::cout << *subevents[i].front() << std::endl;
         // check global event
-        if ((events.front().GetEventNumber() + 1) != trgnr_actual_global) events.pop();
+        if ((events.front().GetEventNumber() + tlu_event_offset) != trgnr_actual_global) events.pop();
         // check sub events
         for (size_t i = 0; i < n_sub; i++) {
             // check tlu event
             if (typeID[i] == tlu_id) {
-                if ((subevents[i].front()->GetEventNumber() + 1) != trgnr_actual_global) {
+                if ((subevents[i].front()->GetEventNumber() + tlu_event_offset) != trgnr_actual_global) {
                     std::cout << "delete TLU subevent " << subevents[i].front()->GetEventNumber() << std::endl;
                     subevents[i].pop();
                 }
@@ -305,7 +323,7 @@ int main(int argc, char **argv) {
         // mismatch variables
         bool got_mismatch;
 
-        while (reader.NextEvent()) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
+        while (reader.NextEvent()) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
             counter++;
             // get current event as detector event
             read_event = &reader.GetDetectorEvent();
