@@ -13,6 +13,7 @@
 #include "TFile.h"
 #include "TTree.h"
 
+// #define MAXTLUTRG(nbits) switch(nbits) { case 15 : return 32768; case 16 : return 65536 }
 
 class SyncSetup {
 public:
@@ -32,11 +33,14 @@ public:
     std::vector<bool> trgnr_out_of_order;
     unsigned trgnr_actual_global = 0;
     size_t n_sub;
+    // length of trigger in bits before wraparound, defaults to 15 bits in SyncSetup constructor
+    const unsigned char tlu_trg_bits;
+    const unsigned max_tlu_trgnr = static_cast<unsigned int>(pow(2, tlu_trg_bits));
 
     unsigned tlu_id = eudaq::Event::str2id("_TLU");  // ID of TLU subevents
 
     // constructor needs BORE (Begin Of Run Event) to set up the queues
-    explicit SyncSetup(const eudaq::DetectorEvent *bore) {
+    explicit SyncSetup(const eudaq::DetectorEvent *bore, unsigned char tlu_trg_bits=15) : tlu_trg_bits(tlu_trg_bits) {
         if (!bore->IsBORE())
             throw;
         // determine number of sub detectors/events
@@ -70,8 +74,8 @@ public:
         if (trgnr_actual[i] + allowed_trg_jump < prev_trigger) {
             std::cout << "overflow detected " << subtype[i] << " new: " << trgnr_actual[i] << " old: "
                       << prev_trigger << std::endl;
-            trgnr_tlu_offset[i] += 32768;
-            trgnr_actual[i] += 32768;
+            trgnr_tlu_offset[i] += max_tlu_trgnr; // 32768;
+            trgnr_actual[i] += max_tlu_trgnr; // 32768;
         }
     }
 
@@ -85,7 +89,7 @@ public:
         // check for FEI4 problem, do not increase trigger to not loose synchronization
         // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002141)
         unsigned cur_trigID = eudaq::PluginManager::GetTriggerID(*subevents[i].front());
-        if (typeID[i] != tlu_id && cur_trigID > 32768) {
+        if (typeID[i] != tlu_id && cur_trigID > max_tlu_trgnr) {
             std::cout << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
             // trgnr_actual[i]++;
             trgnr_out_of_order[i] = true;
@@ -93,9 +97,9 @@ public:
         // catch NI error and increase NI total trigger number by one instead
         } else if (subtype[i] == "NI" &&
                    std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > allowed_trg_jump_NI &&
-                   !((trgnr_actual[i] + 1) % 32768 == 0 && !trgnr_out_of_order[i]) ) {
+                   !((trgnr_actual[i] + 1) % max_tlu_trgnr == 0 && !trgnr_out_of_order[i]) ) {
             std::cout << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
-            trgnr_actual[i] = (trgnr_actual[i] + 1) % 32768 + trgnr_tlu_offset[i];
+            trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
             trgnr_out_of_order[i] = true;
             check_tlu_overflow(i, triggerID_old);
         } else {
