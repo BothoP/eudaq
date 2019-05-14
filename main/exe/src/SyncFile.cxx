@@ -31,7 +31,7 @@ public:
     std::vector<std::string> subtype;
 
     std::vector<bool> trgnr_wraparound;
-    std::vector<bool> trgnr_out_of_order;
+    std::vector<bool> bad_event;
     unsigned trgnr_actual_global = 0;
     size_t n_sub;
     // length of trigger in bits before wraparound, defaults to 15 bits in SyncSetup constructor
@@ -50,7 +50,7 @@ public:
         // initialize all counters and subevents
         trgnr_actual.resize(n_sub, 0);
         trgnr_tlu_offset.resize(n_sub, 0);
-        trgnr_out_of_order.resize(n_sub, false);
+        bad_event.resize(n_sub, false);
         trgnr_wraparound.resize(n_sub, false);
         subevents.resize(n_sub);
         bool tlu_found = false;
@@ -102,7 +102,7 @@ public:
     // calls trigger number overflow/wraparound check
     void update_trigger_id(size_t i) {
         // detection limit for NI trigger jumps
-        static const unsigned allowed_trg_jump_NI = 5;
+//        static const unsigned allowed_trg_jump_NI = 1;
         unsigned triggerID_old = trgnr_actual[i];
         // check for FEI4 problem, do not increase trigger to not loose synchronization
         // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002141)
@@ -110,24 +110,25 @@ public:
         if (typeID[i] != tlu_id && cur_trigID > max_tlu_trgnr) {
             std::cout << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
             // trgnr_actual[i]++;
-            trgnr_out_of_order[i] = true;
+            bad_event[i] = true;
 
-        // catch NI error and increase NI total trigger number by one instead
+        // catch NI error and increase NI total trigger number by one instead, mark event as bad to be deleted
         } else if (subtype[i] == "NI" &&
-                   std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > allowed_trg_jump_NI &&
-                   !((triggerID_old + 1) % max_tlu_trgnr == 0 && !trgnr_out_of_order[i]) ) {
+//                 (std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > allowed_trg_jump_NI &&
+                (cur_trigID + trgnr_tlu_offset[i] != ((triggerID_old + 1 ) % max_tlu_trgnr) + trgnr_tlu_offset[i])) {
+//                   !((triggerID_old + 1) % max_tlu_trgnr == 0 && !bad_event[i]) ) {
             std::cout << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
-            trgnr_actual[i] = (trgnr_actual[i] + tlu_event_offset) % max_tlu_trgnr + trgnr_tlu_offset[i];
-            trgnr_out_of_order[i] = true;
+            trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
+            bad_event[i] = true;
             check_tlu_overflow(i, triggerID_old);
         } else {
             trgnr_actual[i] = trgnr_tlu_offset[i] + cur_trigID;
             // check for overflow                   // except if NI comes back from trigger problem in this event
-            // if(!(trgnr_out_of_order[i] && subtype[i] == "NI"))
+            // if(!(bad_event[i] && subtype[i] == "NI"))
             check_tlu_overflow(i, triggerID_old);
-            // reset trg_nr_problem flag
-            if (trgnr_out_of_order[i])
-                trgnr_out_of_order[i] = false;
+            // reset bad_event flag
+            if (bad_event[i])
+                bad_event[i] = false;
         }
     }
 
@@ -160,10 +161,10 @@ public:
 
     // checks for FEI4 high trigger number problem
     bool check_high_trg() {
-        bool any_trgnr_out_of_order = false;
+        bool any_bad_event = false;
         for (size_t i = 0; i < n_sub; i++)
-            any_trgnr_out_of_order |= trgnr_out_of_order[i];
-        if (any_trgnr_out_of_order) {
+            any_bad_event |= bad_event[i];
+        if (any_bad_event) {
             std::cout << events.front() << std::endl;
             events.pop();
             for (size_t i = 0; i < n_sub; i++) {
@@ -180,7 +181,7 @@ public:
         // TODO: define max trigger jump
         for (size_t i = 0; i < n_sub; i++) {
             if ((typeID[i] != tlu_id) && (trgnr_actual[i] > trgnr_actual_global) && (trgnr_actual[i] < trgnr_actual_global + 10000) &&
-                !trgnr_out_of_order[i]) {
+                !bad_event[i]) {
                 trgnr_actual_global = trgnr_actual[i];
                 // mismatched_det = i;
             }
@@ -192,7 +193,7 @@ public:
         // check trigger IDs for mismatch
         for (size_t i = 0; i < n_sub; i++) {
             if (typeID[i] != tlu_id && (trgnr_actual[i] != events.front().GetEventNumber() + tlu_event_offset ||
-                                         trgnr_out_of_order[i])) {  // && !subevents[i].front()->IsEORE()) {
+                                         bad_event[i])) {  // && !subevents[i].front()->IsEORE()) {
                 std::cout << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i] << " "
                           << trgnr_actual[i] << std::endl;
                 // hack because NI sends invalid trigger number in EORE
@@ -220,8 +221,8 @@ public:
                     subevents[i].pop();
                 }
             }
-                // check other sub events
-            else if (trgnr_actual[i] != trgnr_actual_global || trgnr_out_of_order[i]) {
+            // check other sub events
+            else if (trgnr_actual[i] != trgnr_actual_global || bad_event[i]) {
                 std::cout << "delete " << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i]
                           << " " << trgnr_actual[i] << std::endl;
                 subevents[i].pop();
@@ -323,7 +324,7 @@ int main(int argc, char **argv) {
         // mismatch variables
         bool got_mismatch;
 
-        while (reader.NextEvent()) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
+        while (reader.NextEvent()) { //  && counter < 202000) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
             counter++;
             // get current event as detector event
             read_event = &reader.GetDetectorEvent();
