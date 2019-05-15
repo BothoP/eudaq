@@ -3,6 +3,7 @@
 //
 
 #include <iostream>
+#include <fstream>
 #include <string>
 #include <queue>
 #include <exception>
@@ -15,7 +16,7 @@
 #include "TTree.h"
 
 // #define MAXTLUTRG(nbits) switch(nbits) { case 15 : return 32768; case 16 : return 65536 }
-bool dbg = true;
+bool dbg = false;
 
 class NullBuffer : public std::streambuf
 {
@@ -319,6 +320,14 @@ int main(int argc, char **argv) {
             output_file = output_file + '/' + infile.Value().substr(i + 1, infile.Value().length() - i);
         else
             output_file = output_file + '/' + infile.Value();
+
+        // check if file has size != 0
+        std::ifstream in(infile.Value(), std::ifstream::ate | std::ifstream::binary);
+        output() << in.tellg() << std::endl;
+        if (in.tellg() == 0) {
+            return 1;
+        }
+        in.close();
 
         // reader instance opening file
         eudaq::FileReader reader(infile.Value());
