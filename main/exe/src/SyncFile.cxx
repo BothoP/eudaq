@@ -150,6 +150,10 @@ public:
             output() << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
             trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
             bad_event[i] = true;
+            // First event with new firmware problematic because trigger number is 0 again
+            if(!trgnr_actual_global && cur_trigID==0 && tlu_event_offset == 0)
+                trgnr_actual[i] = 0;
+                bad_event[i] = false;
 //            check_tlu_overflow(i, triggerID_old);
         // catch wrong Hybrid 5 trigger number = 0 events and flag as bad
 //        } else if (subtype[i] == "DEPFE5" && cur_trigID == 0 && triggerID_old % max_tlu_trgnr != max_tlu_trgnr - 1) {
