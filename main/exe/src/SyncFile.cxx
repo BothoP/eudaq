@@ -15,6 +15,22 @@
 #include "TTree.h"
 
 // #define MAXTLUTRG(nbits) switch(nbits) { case 15 : return 32768; case 16 : return 65536 }
+bool dbg = true;
+
+class NullBuffer : public std::streambuf
+{
+public:
+    int overflow(int c) override { return c; }
+};
+NullBuffer null_buffer;
+std::ostream null_stream(&null_buffer);
+
+std::ostream &output() {
+    if(dbg) {
+        return std::cout;
+    }
+    return null_stream;
+}
 
 class SyncSetup {
 public:
@@ -62,7 +78,7 @@ public:
             if (typeID.back() == tlu_id) {
                 tlu_found = true;
                 std::string fw_id = subevent->GetTag("FirmwareID", "unknown");
-                std::cout << "firmware id " << fw_id << std::endl;
+                output() << "firmware id " <<  fw_id << std::endl;
                 if(fw_id == "65") { // standard firmware
                     tlu_event_offset = 1;
                 } else {  // Florian's producer for new TLU firmware does not have firmware tag in BORE
@@ -90,8 +106,8 @@ public:
         // This limit needs to be at least the same size as the NI mismatch detection limit
         static const unsigned allowed_trg_jump = 20;
         if (trgnr_actual[i] + allowed_trg_jump < prev_trigger) {
-            std::cout << "overflow detected " << subtype[i] << " new: " << trgnr_actual[i] << " old: "
-                      << prev_trigger << std::endl;
+            output() << "overflow detected "  << subtype[i] << " new: " << trgnr_actual[i] << " old: "
+                          << prev_trigger << std::endl;
             trgnr_tlu_offset[i] += max_tlu_trgnr; // 32768;
             trgnr_actual[i] += max_tlu_trgnr; // 32768;
         }
@@ -103,33 +119,45 @@ public:
     void update_trigger_id(size_t i) {
         // detection limit for NI trigger jumps
 //        static const unsigned allowed_trg_jump_NI = 1;
+        static const unsigned allowed_trg_jump_DEPFE5 = 5;
         unsigned triggerID_old = trgnr_actual[i];
         // check for FEI4 problem, do not increase trigger to not loose synchronization
         // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002141)
         unsigned cur_trigID = eudaq::PluginManager::GetTriggerID(*subevents[i].front());
         if (typeID[i] != tlu_id && cur_trigID > max_tlu_trgnr) {
-            std::cout << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
+            output() << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
             // trgnr_actual[i]++;
             bad_event[i] = true;
 
         // catch NI error and increase NI total trigger number by one instead, mark event as bad to be deleted
+        // current check only works if NI never sends the wrong number of events (i.e. one event per actual trigger must be sent)
         } else if (subtype[i] == "NI" &&
 //                 (std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > allowed_trg_jump_NI &&
                 (cur_trigID + trgnr_tlu_offset[i] != ((triggerID_old + 1 ) % max_tlu_trgnr) + trgnr_tlu_offset[i])) {
 //                   !((triggerID_old + 1) % max_tlu_trgnr == 0 && !bad_event[i]) ) {
-            std::cout << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
+            output() << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
             trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
             bad_event[i] = true;
-            check_tlu_overflow(i, triggerID_old);
+//            check_tlu_overflow(i, triggerID_old);
+        // catch wrong Hybrid 5 trigger number = 0 events and flag as bad
+//        } else if (subtype[i] == "DEPFE5" && cur_trigID == 0 && triggerID_old % max_tlu_trgnr != max_tlu_trgnr - 1) {
+        } else if (subtype[i] == "DEPFE5" &&
+//                (cur_trigID + trgnr_tlu_offset[i] != ((triggerID_old + 1 ) % max_tlu_trgnr) + trgnr_tlu_offset[i])) {
+                (std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > allowed_trg_jump_DEPFE5)
+                && !((triggerID_old + 1) % max_tlu_trgnr == 0)) {
+            trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
+            bad_event[i] = true;
+//            check_tlu_overflow(i, triggerID_old);
         } else {
             trgnr_actual[i] = trgnr_tlu_offset[i] + cur_trigID;
             // check for overflow                   // except if NI comes back from trigger problem in this event
             // if(!(bad_event[i] && subtype[i] == "NI"))
-            check_tlu_overflow(i, triggerID_old);
+//            check_tlu_overflow(i, triggerID_old);
             // reset bad_event flag
             if (bad_event[i])
                 bad_event[i] = false;
         }
+        check_tlu_overflow(i, triggerID_old);
     }
 
     void add_event(const eudaq::DetectorEvent *read_event) {
@@ -165,13 +193,13 @@ public:
         for (size_t i = 0; i < n_sub; i++)
             any_bad_event |= bad_event[i];
         if (any_bad_event) {
-            std::cout << events.front() << std::endl;
+            output() << events.front() << std::endl;
             events.pop();
             for (size_t i = 0; i < n_sub; i++) {
-                std::cout << *subevents[i].front() << std::endl;
+                output() << *subevents[i].front() << std::endl;
                 subevents[i].pop();
             }
-            std::cout << "High trigger number problem, skip event" << std::endl << std::endl;
+            output() << "High trigger number problem, skip event" << std::endl << std::endl;
             return true;
         }
         return false;
@@ -194,11 +222,12 @@ public:
         for (size_t i = 0; i < n_sub; i++) {
             if (typeID[i] != tlu_id && (trgnr_actual[i] != events.front().GetEventNumber() + tlu_event_offset ||
                                          bad_event[i])) {  // && !subevents[i].front()->IsEORE()) {
-                std::cout << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i] << " "
-                          << trgnr_actual[i] << std::endl;
                 // hack because NI sends invalid trigger number in EORE
-                if (!subevents[i].front()->IsEORE())
+                if (!subevents[i].front()->IsEORE()) {
+                    output() << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i] << " "
+                              << trgnr_actual[i] << std::endl;
                     return true;
+                }
             }
         }
         return false;
@@ -206,10 +235,11 @@ public:
 
     // discard global events and subevents of lower trigger IDs
     void discard_mismatch() {
-        std::cout << "max_trigger_ID " << trgnr_actual_global << std::endl;
-        std::cout << events.front() << std::endl;
-        for (size_t i = 0; i < n_sub; i++)
-            std::cout << *subevents[i].front() << std::endl;
+        output() << "max_trigger_ID " << trgnr_actual_global << std::endl;
+        output() << events.front() << std::endl;
+        for (size_t i = 0; i < n_sub; i++) {
+            output() << *subevents[i].front() << std::endl;
+        }
         // check global event
         if ((events.front().GetEventNumber() + tlu_event_offset) != trgnr_actual_global) events.pop();
         // check sub events
@@ -217,13 +247,13 @@ public:
             // check tlu event
             if (typeID[i] == tlu_id) {
                 if ((subevents[i].front()->GetEventNumber() + tlu_event_offset) != trgnr_actual_global) {
-                    std::cout << "delete TLU subevent " << subevents[i].front()->GetEventNumber() << std::endl;
+                    output() << "delete TLU subevent " << subevents[i].front()->GetEventNumber() << std::endl;
                     subevents[i].pop();
                 }
             }
             // check other sub events
             else if (trgnr_actual[i] != trgnr_actual_global || bad_event[i]) {
-                std::cout << "delete " << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i]
+                output() << "delete " << i << " " << eudaq::Event::id2str(typeID[i]) << ":" << subtype[i]
                           << " " << trgnr_actual[i] << std::endl;
                 subevents[i].pop();
                 if (!subevents[i].empty()) {
@@ -297,14 +327,6 @@ int main(int argc, char **argv) {
         writer->StartRun(reader.RunNumber());
         std::cout << "Writing to file: " << output_file << std::endl;
 
-        // open root file and define tree
-        TFile rootfile((output_file.substr(0, output_file.length() - 3) + "root").c_str(), "RECREATE");
-        std::cout << "Writing root file: " << rootfile.GetName() << std::endl;
-        // Initialize tree
-        TTree event_tree("events", "Events");
-        unsigned eventnumber;
-        event_tree.Branch("Event", &eventnumber, "Event/i");
-
         // get first event (BORE - Beginning Of Run Event) and copy to output file
         read_event = &reader.GetDetectorEvent();
         writer->WriteEvent(*read_event);
@@ -312,6 +334,13 @@ int main(int argc, char **argv) {
         eudaq::PluginManager::Initialize(*read_event);
         // initialize SyncSetup
         SyncSetup setup(read_event);
+
+//        // open root file and define tree
+//        TFile rootfile((output_file.substr(0, output_file.length() - 3) + "root").c_str(), "RECREATE");
+//        output() << "Writing root file: " << rootfile.GetName() << std::endl;
+//        // Initialize tree
+//        TTree event_tree("events", "Events");
+//        event_tree.Branch("Event", &SyncF, "Event/i");
 
         // variables used in the loop
         unsigned counter = 0;
@@ -324,7 +353,7 @@ int main(int argc, char **argv) {
         // mismatch variables
         bool got_mismatch;
 
-        while (reader.NextEvent()) { //  && counter < 202000) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
+        while (reader.NextEvent()) { //  && counter < 42200) { //  < 132600) { //  && counter < 202000) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
             counter++;
             // get current event as detector event
             read_event = &reader.GetDetectorEvent();
@@ -347,7 +376,7 @@ int main(int argc, char **argv) {
 
             // in case of mismatch discard global events and subevents of lower trigger IDs
             if (got_mismatch) {
-                std::cout << "reset mismatch" << std::endl;
+                output() << "reset mismatch" << std::endl;
                 setup.discard_mismatch();
             }
                 // no mismatch: write out event
@@ -365,7 +394,7 @@ int main(int argc, char **argv) {
 
             // in case of mismatch discard global events and subevents of lower trigger IDs
             if (got_mismatch) {
-                std::cout << "reset mismatch" << std::endl;
+                output() << "reset mismatch" << std::endl;
                 setup.discard_mismatch();
             }
                 // no mismatch: write out event
@@ -376,14 +405,14 @@ int main(int argc, char **argv) {
         }
 
         std::cout << "Remaining global events: " << setup.events.size() << std::endl;
+        std::cout << "Remaining subevents: " << std::endl;
         for (size_t i = 0; i < setup.n_sub; i++) {
-            std::cout << "Remaining subevents: " << std::endl;
             std::cout << eudaq::Event::id2str(setup.typeID[i]) << " " << setup.subtype[i] << " "
                       << setup.subevents[i].size()
                       << std::endl;
         }
-        event_tree.Write();
-        rootfile.Close();
+//        event_tree.Write();
+//        rootfile.Close();
 
     } catch (...) {
         return op.HandleMainException();
