@@ -124,6 +124,11 @@ public:
         // check for FEI4 problem, do not increase trigger to not loose synchronization
         // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002141)
         unsigned cur_trigID = eudaq::PluginManager::GetTriggerID(*subevents[i].front());
+        // only take lower 16 bit of PyBAR trigger field, depending on the DATA_FORMAT field in the dut configuration YAML file the top 15 bit can be a timestamp
+        // (for the unfortunate DATA_FORMAT=1 setting there is no trigger number at all)
+        if (subtype[i] == "PyBAR") {
+            cur_trigID = cur_trigID & 0xFFFF;
+        }
         if (typeID[i] != tlu_id && cur_trigID > max_tlu_trgnr) {
             output() << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
             // trgnr_actual[i]++;
