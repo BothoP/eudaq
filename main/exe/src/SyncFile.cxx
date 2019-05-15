@@ -51,6 +51,9 @@ public:
     std::vector<bool> bad_event;
     unsigned trgnr_actual_global = 0;
     size_t n_sub;
+
+    unsigned FEI4_trgnr_mask = 0xFFFFFFFF;
+
     // length of trigger in bits before wraparound, defaults to 15 bits in SyncSetup constructor
     const unsigned char tlu_trg_bits;
     const unsigned max_tlu_trgnr = static_cast<unsigned int>(pow(2, tlu_trg_bits));
@@ -123,18 +126,21 @@ public:
         static const unsigned allowed_trg_jump_DEPFE5 = 5;
         unsigned triggerID_old = trgnr_actual[i];
         // check for FEI4 problem, do not increase trigger to not loose synchronization
-        // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002141)
+        // many correct triggers seem to be sent after the high trigger number storm (checked for DEPFET 2019 run 002151)
         unsigned cur_trigID = eudaq::PluginManager::GetTriggerID(*subevents[i].front());
         // only take lower 16 bit of PyBAR trigger field, depending on the DATA_FORMAT field in the dut configuration YAML file the top 15 bit can be a timestamp
         // (for the unfortunate DATA_FORMAT=1 setting there is no trigger number at all)
+        // TODO: makes detection of FEI4 triggernumber slipup much worse for these runs
         if (subtype[i] == "PyBAR") {
-            cur_trigID = cur_trigID & 0xFFFF;
+            cur_trigID = cur_trigID & FEI4_trgnr_mask;
         }
         if (typeID[i] != tlu_id && cur_trigID > max_tlu_trgnr) {
             output() << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
             // trgnr_actual[i]++;
             bad_event[i] = true;
-
+        } else if(subtype[i] == "PyBAR" && (std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > 300)
+                && (cur_trigID + trgnr_tlu_offset[i] != ((triggerID_old + 1 ) % max_tlu_trgnr) + trgnr_tlu_offset[i])) {
+            bad_event[i] = true;
         // catch NI error and increase NI total trigger number by one instead, mark event as bad to be deleted
         // current check only works if NI never sends the wrong number of events (i.e. one event per actual trigger must be sent)
         } else if (subtype[i] == "NI" &&
@@ -189,6 +195,19 @@ public:
             // if queue was empty, determine trigger number of new current front element
             if (subevents[i].size() == 1) {
                 update_trigger_id(i);
+            }
+        }
+
+        // get initialization for FEI4 cut
+        if (eventnumber == 0) {
+            output() << "event number 0 " << std::endl;
+            for (size_t i = 0; i < n_sub; i++) {
+                output() << "subtype " << subtype[i] << " trgnr " << eudaq::PluginManager::GetTriggerID(*subevents[i].front()) << std::endl;
+                if(subtype[i] == "PyBAR" && (eudaq::PluginManager::GetTriggerID(*subevents[i].front()) & 0xFFFF0000) ) {
+                    FEI4_trgnr_mask = 0xFFFF;
+                    trgnr_actual[i] = tlu_event_offset;
+                    output() << "FEI4 timestamp mode" << std::endl;
+                }
             }
         }
     }
