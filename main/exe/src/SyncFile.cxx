@@ -188,6 +188,20 @@ public:
         for (const auto &i : taglist) {
             events.back().SetTag(i, read_event->GetTag(i));
         }
+
+        // get initialization for FEI4 trigger header field mask
+        if (eventnumber == 0) {
+            output() << "event number 0 " << std::endl;
+            for (size_t i = 0; i < n_sub; i++) {
+                output() << "subtype " << subtype[i] << " trgnr " << eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) << std::endl;
+                if(subtype[i] == "PyBAR" && (eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) & 0xFFFF0000) ) {
+                    FEI4_trgnr_mask = 0xFFFF;
+                    // trgnr_actual[i] = tlu_event_offset;
+                    output() << "FEI4 timestamp mode" << std::endl;
+                }
+            }
+        }
+
         // read in sub events
         for (size_t i = 0; i < n_sub; i++) {
             // create shared pointer references to subevents in queues
@@ -195,19 +209,6 @@ public:
             // if queue was empty, determine trigger number of new current front element
             if (subevents[i].size() == 1) {
                 update_trigger_id(i);
-            }
-        }
-
-        // get initialization for FEI4 cut
-        if (eventnumber == 0) {
-            output() << "event number 0 " << std::endl;
-            for (size_t i = 0; i < n_sub; i++) {
-                output() << "subtype " << subtype[i] << " trgnr " << eudaq::PluginManager::GetTriggerID(*subevents[i].front()) << std::endl;
-                if(subtype[i] == "PyBAR" && (eudaq::PluginManager::GetTriggerID(*subevents[i].front()) & 0xFFFF0000) ) {
-                    FEI4_trgnr_mask = 0xFFFF;
-                    trgnr_actual[i] = tlu_event_offset;
-                    output() << "FEI4 timestamp mode" << std::endl;
-                }
             }
         }
     }
