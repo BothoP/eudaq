@@ -243,7 +243,7 @@ public:
     void update_max_trigger() {
         // TODO: define max trigger jump
         for (size_t i = 0; i < n_sub; i++) {
-            if ((typeID[i] != tlu_id) && (trgnr_actual[i] > trgnr_actual_global) && (trgnr_actual[i] < trgnr_actual_global + 10000) &&
+            if ((typeID[i] != tlu_id) && (trgnr_actual[i] > trgnr_actual_global) && (trgnr_actual[i] < trgnr_actual_global + 30000) &&
                 !bad_event[i]) {
                 trgnr_actual_global = trgnr_actual[i];
                 // mismatched_det = i;
@@ -324,6 +324,8 @@ int main(int argc, char **argv) {
                            "A command-line tool for syncing sub events based on TLU trigger numbers", -1);
     eudaq::Option<std::string> infile(op, "i", "infile", "", "string", "Input filename");
     eudaq::Option<std::string> outpath(op, "o", "outpath", "", "string", "Output path");
+    eudaq::OptionFlag debug(op, "debug", "debug", "Debug output");
+    eudaq::Option<std::string> num_events(op, "n", "num_events", "429496729", "number", "Number of events to be processed");
     try {
 
         op.Parse(argv);
@@ -334,6 +336,11 @@ int main(int argc, char **argv) {
         if (outpath.Value().empty()) {
             throw (eudaq::OptionException("Specify output path"));
         }
+        if (debug.IsSet()) {
+            dbg = true;
+        }
+        unsigned max_events = std::atoi(num_events.Value().c_str());
+        output() << "max_events = " << max_events << std::endl;
         // remove trailing slashes from path name
         std::string output_file = outpath.Value();
         while (output_file.back() == '/' || output_file.back() == '\\') {
@@ -396,7 +403,7 @@ int main(int argc, char **argv) {
         // mismatch variables
         bool got_mismatch;
 
-        while (reader.NextEvent()) { //  && counter < 42200) { //  < 132600) { //  && counter < 202000) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
+        while (reader.NextEvent() && counter < max_events) { //  && counter < 42200) { //  < 132600) { //  && counter < 202000) { // } && counter < 32770) { //  && counter // < 131100) { //  && counter < 114100) { // && counter < 37000) {
             counter++;
             // get current event as detector event
             read_event = &reader.GetDetectorEvent();
