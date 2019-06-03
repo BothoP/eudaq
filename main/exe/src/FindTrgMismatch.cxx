@@ -119,7 +119,8 @@ int main(int argc, char **argv) {
     sprintf(s, "%06d", runnumber);
     std::string srunnumber = s;
     //FIXME: I changed this line to the runnumber from the filesname
-    csvfile.open("/run/media/paschen/Seagate Backup Plus Drive/TB2019/eudaq/stats2/mismatch_" + runnumber_str_from_filename + ".csv");
+    // csvfile.open("/run/media/paschen/Seagate Backup Plus Drive/TB2019/eudaq/stats2/mismatch_" + runnumber_str_from_filename + ".csv");
+    csvfile.open("/home/paschen/eudaq/Helgedata/mismatch_" + runnumber_str_from_filename + ".csv");
 
     // get list of indices for detectors with mismatches
     std::vector<int> index;

@@ -131,14 +131,14 @@ public:
         // only take lower 16 bit of PyBAR trigger field, depending on the DATA_FORMAT field in the dut configuration YAML file the top 15 bit can be a timestamp
         // (for the unfortunate DATA_FORMAT=1 setting there is no trigger number at all)
         // TODO: makes detection of FEI4 triggernumber slipup much worse for these runs
-        if (subtype[i] == "PyBAR") {
+        if (subtype[i] == "PyBAR" || subtype[i]  == "USBPIX_GEN3") {
             cur_trigID = cur_trigID & FEI4_trgnr_mask;
         }
         if (typeID[i] != tlu_id && cur_trigID > max_tlu_trgnr) {
             output() << eudaq::Event::id2str(typeID[i]) << " " << subtype[i] << " " << cur_trigID << std::endl;
             // trgnr_actual[i]++;
             bad_event[i] = true;
-        } else if(subtype[i] == "PyBAR" && (std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > 300)
+        } else if((subtype[i] == "PyBAR" || subtype[i]  == "USBPIX_GEN3") && (std::abs((long) (cur_trigID + trgnr_tlu_offset[i]) - (long) triggerID_old) > 10)
                 && (cur_trigID + trgnr_tlu_offset[i] != ((triggerID_old + 1 ) % max_tlu_trgnr) + trgnr_tlu_offset[i])) {
             bad_event[i] = true;
         // catch NI error and increase NI total trigger number by one instead, mark event as bad to be deleted
@@ -149,7 +149,7 @@ public:
 //                   !((triggerID_old + 1) % max_tlu_trgnr == 0 && !bad_event[i]) ) {
             output() << "NI problem " << cur_trigID + trgnr_tlu_offset[i] << " " << triggerID_old << std::endl;
             trgnr_actual[i] = (trgnr_actual[i] + 1) % max_tlu_trgnr + trgnr_tlu_offset[i];
-            bad_event[i] = true;
+            // bad_event[i] = true;
             // First event with new firmware problematic because trigger number is 0 again
             if(!subevents[i].front()->GetEventNumber() && tlu_event_offset == 0) {
                 output() << "first NI event with new TLU firmware fix" << std::endl;
@@ -203,7 +203,7 @@ public:
             output() << "event number 0 " << std::endl;
             for (size_t i = 0; i < n_sub; i++) {
                 output() << "subtype " << subtype[i] << " trgnr " << eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) << std::endl;
-                if(subtype[i] == "PyBAR" && (eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) & 0xFFFF0000) ) {
+                if((subtype[i] == "PyBAR" || subtype[i]  == "USBPIX_GEN3") && (eudaq::PluginManager::GetTriggerID(*read_event->GetEventPtr(i)) & 0xFFFF0000) ) {
                     FEI4_trgnr_mask = 0xFFFF;
                     // trgnr_actual[i] = tlu_event_offset;
                     output() << "FEI4 timestamp mode" << std::endl;
